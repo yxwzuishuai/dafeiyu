@@ -8,7 +8,7 @@ from rich.table import Table
 
 from dafeiyu.config import parse_config
 from dafeiyu.engine import Monitor
-from dafeiyu.indicators import CHINA_TIME, calculate_daily
+from dafeiyu.indicators import CHINA_TIME, KDJ_WARNING_GAP, calculate_daily, phase_signal
 from dafeiyu.models import Asset, DailyBar, Quote, Row
 from dafeiyu.providers import Batch, FetchError, Providers, parse_daily_bars, parse_eastmoney_daily, parse_tencent_daily
 from dafeiyu.render import indicator_cells, render, render_view, width
@@ -45,10 +45,10 @@ class CalculationTests(unittest.TestCase):
         self.assertLess(result.k, result.d)
         self.assertEqual(result.macd_color, "绿柱")
 
-    def test_remaining_above_d_is_not_reported_as_another_gold_cross(self):
+    def test_remaining_above_d_keeps_the_gold_phase(self):
         result = calculate_daily(daily_bars([D(10)] * 38 + [D(11), D("10.9")]))
         self.assertGreater(result.k, result.d)
-        self.assertEqual(result.kdj_signal, "无新交叉")
+        self.assertEqual(result.kdj_signal, "金叉")
         # The price fell from 11 to 10.9, but its MACD histogram is still positive.
         self.assertEqual(result.macd_color, "红柱")
 
@@ -57,7 +57,7 @@ class CalculationTests(unittest.TestCase):
         result = calculate_daily(bars)
         self.assertEqual((result.k, result.d, result.j), (D(50), D(50), D(50)))
         self.assertEqual((result.dif, result.dea, result.macd), (D(0), D(0), D(0)))
-        self.assertEqual(result.kdj_signal, "无新交叉")
+        self.assertEqual(result.kdj_signal, "重合")
         self.assertEqual(result.macd_color, "零轴")
 
     def test_short_or_repeated_history_does_not_produce_a_trading_signal(self):
@@ -75,6 +75,54 @@ class CalculationTests(unittest.TestCase):
         self.assertFalse(calculate_daily(bars, now=today + timedelta(days=1)).provisional)
         with self.assertRaisesRegex(ValueError, "晚于"):
             calculate_daily(bars, now=today - timedelta(days=1))
+
+
+class PhaseWarningTests(unittest.TestCase):
+    def kdj(self, values):
+        return phase_signal([D(str(value)) for value in values], positive='金叉', negative='死叉', neutral='重合', to_positive='即将金叉', to_negative='即将死叉', max_gap=KDJ_WARNING_GAP)
+
+    def macd(self, values):
+        return phase_signal([D(str(value)) for value in values], positive='红柱', negative='绿柱', neutral='零轴', to_positive='即将红柱', to_negative='即将绿柱')
+
+    def test_two_days_of_convergence_near_the_cross_warn_in_both_directions(self):
+        self.assertEqual(self.kdj([-8, -5, -2]), '即将金叉')
+        self.assertEqual(self.kdj([8, 5, 2]), '即将死叉')
+
+    def test_closeness_alone_or_one_day_rebound_does_not_warn(self):
+        self.assertEqual(self.kdj([-4, -5, -2]), '死叉')
+        self.assertEqual(self.kdj([4, 5, 2]), '金叉')
+        self.assertEqual(self.kdj([-4.8, -4.7, -4.6]), '死叉')
+        self.assertEqual(self.kdj([-2, -2, -2]), '死叉')
+
+    def test_kdj_warning_rejects_a_large_gap_even_with_a_fast_approach(self):
+        self.assertEqual(self.kdj([-30, -20, -10]), '死叉')
+        self.assertEqual(self.kdj([30, 20, 10]), '金叉')
+        self.assertEqual(self.kdj([-15, -10, -5]), '即将金叉')
+
+    def test_a_completed_cross_uses_the_new_phase_instead_of_an_upcoming_label(self):
+        self.assertEqual(self.kdj([-5, -2, 1]), '金叉')
+        self.assertEqual(self.kdj([5, 2, -1]), '死叉')
+        self.assertEqual(self.macd([-.003, -.001, .001]), '红柱')
+        self.assertEqual(self.macd([.003, .001, -.001]), '绿柱')
+
+    def test_macd_warning_is_invariant_to_the_instrument_price_scale(self):
+        for factor in (D('.00001'), D(1), D(10000)):
+            with self.subTest(factor=factor):
+                self.assertEqual(self.macd([D(-8) * factor, D(-6) * factor, D(-4) * factor]), '即将红柱')
+                self.assertEqual(self.macd([D(8) * factor, D(6) * factor, D(4) * factor]), '即将绿柱')
+        self.assertEqual(self.macd([-.004, -.0035, -.003]), '绿柱')
+
+    def test_zero_is_a_contact_or_neutral_state_without_inventing_a_cross(self):
+        self.assertEqual(self.kdj([-2, -1, 0]), '即将金叉')
+        self.assertEqual(self.kdj([2, 1, 0]), '即将死叉')
+        self.assertEqual(self.kdj([0, 0, 0]), '重合')
+        self.assertEqual(self.macd([0, 0, 0]), '零轴')
+
+    def test_a_warning_is_withdrawn_when_the_gap_starts_widening(self):
+        self.assertEqual(self.kdj([-8, -5, -2]), '即将金叉')
+        self.assertEqual(self.kdj([-5, -2, -3]), '死叉')
+        self.assertEqual(self.macd([-.008, -.005, -.002]), '即将红柱')
+        self.assertEqual(self.macd([-.005, -.002, -.003]), '绿柱')
 
 
 class DailyProviderTests(unittest.TestCase):
@@ -195,7 +243,7 @@ class IndicatorRenderTests(unittest.TestCase):
         table = next(part for part in render_view([row], 10, columns=180).renderables if isinstance(part, Table))
         headers = [column.header.plain for column in table.columns]
         index = headers.index('收益')
-        self.assertEqual(headers[index + 1:index + 4], ['KDJ(日)', 'MACD(日)', '指标日期'])
+        self.assertEqual(headers[index + 1:index + 5], ['KDJ(日)', 'MACD(日)', '性价比', '指标日期'])
         for columns in (80, 100, 180):
             self.assertTrue(any(isinstance(part, Table) for part in render_view([row], 10, columns=columns).renderables))
             output = render([row], 10, columns=columns)
@@ -213,3 +261,16 @@ class IndicatorRenderTests(unittest.TestCase):
         self.assertIn('红柱(预/旧)', output)
         self.assertIn('日线失败', output)
         self.assertIn(row.indicators.as_of, output)
+
+    def test_upcoming_states_use_warning_color_and_keep_intraday_old_data_flags(self):
+        row = self.row()
+        row = replace(row, indicators=replace(row.indicators, kdj_signal='即将金叉', macd_signal='即将红柱', macd=D('-0.001'), provisional=True), indicators_stale=True)
+        cells = indicator_cells(row)
+        self.assertEqual(cells['kdj'].plain, '即将金叉(预/旧)')
+        self.assertEqual(cells['macd'].plain, '即将红柱(预/旧)')
+        self.assertEqual(cells['kdj'].style, 'yellow')
+        self.assertEqual(cells['macd'].style, 'yellow')
+        for columns in (80, 100, 180):
+            output = render([row], 10, columns=columns)
+            self.assertIn('即将金叉(预/旧)', output)
+            self.assertIn('即将红柱(预/旧)', output)

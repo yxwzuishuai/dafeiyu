@@ -9,6 +9,7 @@ from rich.console import Console, Group
 from rich.table import Table
 from rich.text import Text
 
+from .assessment import assess_row
 from .models import Row, position
 
 
@@ -68,6 +69,7 @@ LABELS = {
     "percent": "涨跌幅", "high": "最高", "low": "最低", "price": "现价/净值",
     "cost": "成本价", "quantity": "持仓", "return": "收益率", "income": "收益",
     "kdj": "KDJ(日)", "macd": "MACD(日)", "indicator_date": "指标日期",
+    "rating": "性价比",
     "currency": "币种", "time": "行情时间", "status": "状态",
 }
 NUMERIC = {"change", "percent", "high", "low", "price", "cost", "quantity", "return", "income"}
@@ -77,14 +79,19 @@ STAMP = re.compile(r"^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2}Z?)$")
 def indicator_cells(row: Row) -> dict[str, Text]:
     indicator = row.indicators
     if indicator is None:
-        return {key: Text("--") for key in ("kdj", "macd", "indicator_date")}
+        return {key: Text("--") for key in ("kdj", "macd", "rating", "indicator_date")}
     flags = (["预"] if indicator.provisional else []) + (["旧"] if row.indicators_stale else [])
     suffix = "(" + "/".join(flags) + ")" if flags else ""
-    kdj_style = "red" if indicator.kdj_signal == "金叉" else "green" if indicator.kdj_signal == "死叉" else "dim"
-    macd_style = "red" if indicator.macd > 0 else "green" if indicator.macd < 0 else "dim"
+    macd_signal = indicator.macd_signal or indicator.macd_color
+    kdj_style = "yellow" if indicator.kdj_signal.startswith("即将") else "red" if indicator.kdj_signal == "金叉" else "green" if indicator.kdj_signal == "死叉" else "dim"
+    macd_style = "yellow" if macd_signal.startswith("即将") else "red" if indicator.macd > 0 else "green" if indicator.macd < 0 else "dim"
+    assessment = assess_row(row)
+    rating_style = {"不建议买": "green", "性价比低": "dim", "小仓位": "yellow", "性价比高": "bold red", "待更新": "yellow"}.get(assessment.label, "dim")
+    rating_suffix = "(预)" if indicator.provisional and assessment.label not in {"--", "待更新"} else ""
     return {
         "kdj": Text(indicator.kdj_signal + suffix, style=kdj_style),
-        "macd": Text(indicator.macd_color + suffix, style=macd_style),
+        "macd": Text(macd_signal + suffix, style=macd_style),
+        "rating": Text(assessment.label + rating_suffix, style=rating_style),
         "indicator_date": Text(indicator.as_of),
     }
 
@@ -140,7 +147,7 @@ def render_view(
             **indicator_cells(row),
         })
 
-    keys = ["code", "name", "change", "percent", "high", "low", "price", "cost", "quantity", "return", "income", "kdj", "macd", "indicator_date", "time"]
+    keys = ["code", "name", "change", "percent", "high", "low", "price", "cost", "quantity", "return", "income", "kdj", "macd", "rating", "indicator_date", "time"]
     if any(row.asset.kind != "stock" for row in rows):
         keys.insert(0, "kind")
     currencies = {row.quote.currency for row in rows if row.quote}
@@ -154,7 +161,7 @@ def render_view(
         hidden = ["change", "high", "low"]
         keys = [key for key in keys if key not in hidden]
         sizes = column_widths(records, keys, columns)
-    for key in ("time", "indicator_date"):
+    for key in ("time", "indicator_date", "cost", "quantity", "return"):
         if sum(sizes.values()) + len(keys) - 1 <= columns:
             break
         hidden.append(key)

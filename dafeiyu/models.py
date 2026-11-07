@@ -86,6 +86,8 @@ class DailyIndicators:
     macd: Decimal
     kdj_signal: str
     provisional: bool = False
+    macd_signal: str = ""
+    macd_history: tuple[Decimal, ...] = ()
 
     @property
     def macd_color(self) -> str:
