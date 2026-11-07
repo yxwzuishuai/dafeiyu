@@ -1,0 +1,19 @@
+{
+  "interval_seconds": 10,
+  "fund_interval_seconds": 60,
+  "timeout_seconds": 6,
+  "stock_source": "tencent",
+  "proxy": null,
+  "stocks": [
+    "sh000001",
+    {"code": "sh600519", "cost_price": "1500", "quantity": "100"},
+    {"code": "hk00700", "cost_price": "400", "quantity": "100"},
+    "usAAPL"
+  ],
+  "funds": [
+    {"code": "110013", "cost_price": "5.5", "quantity": "1000"}
+  ],
+  "coins": [
+    {"code": "BTC-USD", "cost_price": "70000", "quantity": "0.01"}
+  ]
+}

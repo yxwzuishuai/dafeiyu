@@ -1,0 +1,52 @@
+"""Terminal display lifecycle, independent from market data and scheduling."""
+
+from rich.console import Console, RenderableType
+from rich.live import Live
+from rich.text import Text
+
+
+class Dashboard:
+    def __init__(self, mode: str = "auto", *, single: bool = False, console: Console | None = None):
+        self.console = console or Console(force_terminal=True if mode == "live" else None)
+        terminal = self.console.is_terminal and not self.console.is_dumb_terminal
+        self.enabled = not single and mode != "log" and terminal
+        self.show_hint = mode != "log" and not single and not terminal
+        self._live: Live | None = None
+        self._body: RenderableType | None = None
+
+    @property
+    def columns(self) -> int:
+        return self.console.size.width
+
+    def __enter__(self):
+        if self.enabled:
+            self._live = Live(
+                console=self.console, screen=True, auto_refresh=False,
+                redirect_stdout=False, redirect_stderr=False,
+                vertical_overflow="ellipsis",
+            )
+            self._live.__enter__()
+        elif self.show_hint:
+            self.console.print(Text(
+                "提示：当前是普通输出窗口，使用逐轮输出。"
+                "原地刷新请在 IDE 的 Terminal 或 Windows Terminal 中运行 .\\run.bat。"
+            ), style="yellow")
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        if self._live is not None:
+            # Live restores the terminal and cursor even when Ctrl+C interrupts a request.
+            self._live.__exit__(exc_type, exc_value, traceback)
+            self._live = None
+        return False
+
+    def begin_refresh(self) -> None:
+        if self._live is not None and self._body is not None:
+            self._live.update(self._body, refresh=True)
+
+    def publish(self, body: RenderableType) -> None:
+        self._body = Text(body) if isinstance(body, str) else body
+        if self._live is not None:
+            self._live.update(self._body, refresh=True)
+        else:
+            self.console.print(self._body)

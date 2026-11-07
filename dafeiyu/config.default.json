@@ -1,0 +1,14 @@
+{
+  "interval_seconds": 10,
+  "fund_interval_seconds": 60,
+  "timeout_seconds": 6,
+  "stock_source": "tencent",
+  "proxy": null,
+  "stocks": [
+    "sh588710,0.716,30300"
+  ],
+  "funds": [
+  ],
+  "coins": [
+  ]
+}
