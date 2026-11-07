@@ -30,6 +30,9 @@ class FakeProviders:
     def coin(self, code):
         raise FetchError("币种连接失败")
 
+    def daily(self, code):
+        return []
+
 
 class EngineTests(unittest.TestCase):
     def setUp(self):

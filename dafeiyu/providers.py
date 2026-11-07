@@ -8,7 +8,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode
 from urllib.request import ProxyHandler, Request, build_opener
 
-from .models import Key, Quote, number
+from .models import DailyBar, Key, Quote, number
 
 
 class FetchError(RuntimeError):
@@ -193,10 +193,83 @@ def parse_yahoo(text: str, code: str) -> Quote:
         raise FetchError("雅虎接口返回数据缺失或格式发生变化") from None
 
 
+def parse_daily_bars(records: object) -> list[DailyBar]:
+    if not isinstance(records, list) or not records:
+        raise FetchError("日线接口未返回历史数据")
+    bars = []
+    for record in records:
+        fields = record.split(",") if isinstance(record, str) else record
+        if not isinstance(fields, (list, tuple)) or len(fields) < 5:
+            raise FetchError("日线字段缺失")
+        day = str(fields[0])
+        try:
+            parsed_day = datetime.strptime(day, "%Y-%m-%d").strftime("%Y-%m-%d")
+        except ValueError:
+            raise FetchError("日线日期无效") from None
+        prices = [number(value) for value in fields[1:5]]
+        if any(value is None or value <= 0 for value in prices):
+            raise FetchError("日线价格缺失或不合法")
+        open_, close, high, low = prices
+        if not low <= min(open_, close) <= max(open_, close) <= high:
+            raise FetchError("日线高低价不合法")
+        bars.append(DailyBar(parsed_day, high, low, close))
+    bars.sort(key=lambda bar: bar.day)
+    if len({bar.day for bar in bars}) != len(bars):
+        raise FetchError("日线日期重复")
+    return bars
+
+
+def parse_tencent_daily(text: str, code: str) -> list[DailyBar]:
+    try:
+        payload = json.loads(text)
+        if payload.get("code") != 0:
+            raise FetchError("腾讯日线接口返回失败")
+        # Do not silently substitute unadjusted bars for the requested qfq series.
+        records = payload["data"][code]["qfqday"]
+    except (ValueError, TypeError, KeyError, AttributeError):
+        raise FetchError("腾讯未返回该代码的前复权日线") from None
+    return parse_daily_bars(records)
+
+
+def parse_eastmoney_daily(text: str, code: str) -> list[DailyBar]:
+    try:
+        payload = json.loads(text)
+        data = payload["data"]
+        if payload.get("rc") != 0 or str(data["code"]) != code[2:]:
+            raise FetchError("东方财富日线代码不匹配或接口返回失败")
+        records = data["klines"]
+    except (ValueError, TypeError, KeyError, AttributeError):
+        raise FetchError("东方财富未返回该代码的日线") from None
+    return parse_daily_bars(records)
+
+
 class Providers:
     def __init__(self, client: HttpClient, stock_source: str = "tencent"):
         self.client = client
         self.stock_source = stock_source
+
+    def daily(self, code: str) -> list[DailyBar]:
+        if not re.fullmatch(r"(?:sh|sz|bj)\d{6}", code):
+            raise FetchError("日线指标暂仅支持沪深京股票和场内 ETF")
+        params = urlencode({"param": f"{code},day,,,640,qfq"})
+        try:
+            return parse_tencent_daily(self.client.get(
+                "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?" + params,
+                referer="https://gu.qq.com/",
+            ), code)
+        except FetchError as first_error:
+            params = urlencode({
+                "secid": f"{1 if code.startswith('sh') else 0}.{code[2:]}",
+                "klt": "101", "fqt": "1", "beg": "19900101", "end": "20500101", "lmt": "640",
+                "fields1": "f1,f2,f3,f4,f5,f6", "fields2": "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61",
+            })
+            try:
+                return parse_eastmoney_daily(self.client.get(
+                    "https://push2his.eastmoney.com/api/qt/stock/kline/get?" + params,
+                    referer="https://quote.eastmoney.com/",
+                ), code)
+            except FetchError as second_error:
+                raise FetchError(f"日线获取失败：{first_error}；备用源：{second_error}") from None
 
     def stocks(self, codes: list[str]) -> Batch:
         batches = []

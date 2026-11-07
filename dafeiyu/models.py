@@ -68,8 +68,36 @@ def position(asset: Asset, quote: Quote | None) -> Position:
 
 
 @dataclass(frozen=True)
+class DailyBar:
+    day: str
+    high: Decimal
+    low: Decimal
+    close: Decimal
+
+
+@dataclass(frozen=True)
+class DailyIndicators:
+    as_of: str
+    k: Decimal
+    d: Decimal
+    j: Decimal
+    dif: Decimal
+    dea: Decimal
+    macd: Decimal
+    kdj_signal: str
+    provisional: bool = False
+
+    @property
+    def macd_color(self) -> str:
+        return "红柱" if self.macd > 0 else "绿柱" if self.macd < 0 else "零轴"
+
+
+@dataclass(frozen=True)
 class Row:
     asset: Asset
     quote: Quote | None
     error: str = ""
     stale: bool = False
+    indicators: DailyIndicators | None = None
+    indicator_error: str = ""
+    indicators_stale: bool = False
