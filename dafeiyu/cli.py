@@ -18,6 +18,7 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--funds", nargs="*", help="覆盖基金列表，例如 --funds 110013")
     result.add_argument("--coins", nargs="*", help="覆盖币种列表，例如 --coins BTC-USD DOGE-USD")
     result.add_argument("--display", choices=("auto", "live", "log"), default="auto", help="显示方式：auto 自动选择；live 强制原地刷新；log 逐轮输出")
+    result.add_argument("--score-details", action="store_true", help="展开技术分明细；Windows 终端原地刷新时也可按 D 开关")
     mode = result.add_mutually_exclusive_group()
     mode.add_argument("--once", action="store_true", help="获取并输出一轮后退出")
     mode.add_argument("--count", type=int, help="输出指定轮数后退出")
@@ -45,6 +46,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         from .display import Dashboard
         from .render import render_view
+        from .presentation import SignalChanges
     except ModuleNotFoundError as error:
         if error.name and error.name.split(".")[0] in {"rich", "markdown_it", "mdurl", "pygments"}:
             print("缺少显示依赖。请使用当前 Python 执行：python -m pip install -r requirements.txt", file=sys.stderr)
@@ -52,15 +54,33 @@ def main(argv: list[str] | None = None) -> int:
         raise
     monitor = Monitor(config, Providers(HttpClient(config.timeout_seconds, config.proxy), config.stock_source))
     last_rows = []
+    changes = SignalChanges()
     try:
-        with Dashboard(args.display, single=args.once or args.count == 1) as display:
+        with Dashboard(args.display, single=args.once or args.count == 1, score_details=args.score_details) as display:
+            def repaint() -> None:
+                display.publish(render_view(
+                    last_rows, config.interval_seconds, columns=display.columns,
+                    market=monitor.market_turnover, market_error=monitor.market_error,
+                    score_details=display.score_details, interactive=display.key_enabled,
+                    highlighted=changes.active() if display.enabled else None,
+                ))
+
             def refresh() -> None:
                 nonlocal last_rows
                 display.begin_refresh()
                 last_rows = monitor.refresh()
-                display.publish(render_view(last_rows, config.interval_seconds, columns=display.columns))
+                changes.observe(last_rows)
+                repaint()
 
-            run_periodically(refresh, config.interval_seconds, 1 if args.once else args.count)
+            def poll_ui(force: bool) -> None:
+                expired = changes.expire()
+                if force or expired:
+                    repaint()
+
+            run_periodically(
+                refresh, config.interval_seconds, 1 if args.once else args.count,
+                sleep=lambda seconds: display.wait(seconds, on_poll=poll_ui),
+            )
     except KeyboardInterrupt:
         print("\n已停止。")
         return 0

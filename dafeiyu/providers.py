@@ -1,14 +1,19 @@
 import json
 import re
 import time
-from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field, replace
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode
 from urllib.request import ProxyHandler, Request, build_opener
 
-from .models import DailyBar, Key, Quote, number
+from .market import (
+    MarketDataError, compare_market_days, compare_market_minutes, comparison_cutoff,
+    parse_market_days, parse_market_eastmoney, parse_market_minutes, parse_market_sina,
+)
+from .models import DailyBar, Key, MarketTurnover, Quote, number
 
 
 class FetchError(RuntimeError):
@@ -247,6 +252,66 @@ class Providers:
     def __init__(self, client: HttpClient, stock_source: str = "tencent"):
         self.client = client
         self.stock_source = stock_source
+        self._market_comparison_key = None
+        self._market_comparison_histories = {}
+        self._market_comparison_error = ""
+        self._market_comparison_attempt = 0.0
+
+    def market_turnover(self, *, now: datetime | None = None) -> MarketTurnover:
+        market = self._market_snapshot()
+        try:
+            cutoff = comparison_cutoff(market, now)
+            daily = cutoff.strftime("%H%M") == "1500"
+            key = (cutoff, market.total_amount if daily else None)
+            retry = self._market_comparison_error and time.monotonic() - self._market_comparison_attempt >= 60
+            if key != self._market_comparison_key or retry:
+                self._market_comparison_key = key
+                self._market_comparison_attempt = time.monotonic()
+                self._market_comparison_histories = {}
+                self._market_comparison_error = ""
+                try:
+                    def history(code):
+                        if not daily:
+                            body = self.client.get("https://web.ifzq.gtimg.cn/appstock/app/day/query?" + urlencode({"code": code}))
+                            return code, parse_market_minutes(body, code)
+                        params = urlencode({
+                            "secid": f"{1 if code.startswith('sh') else 0}.{code[2:]}", "klt": "101", "fqt": "0",
+                            "beg": (cutoff - timedelta(days=45)).strftime("%Y%m%d"), "end": cutoff.strftime("%Y%m%d"),
+                            "fields1": "f1,f2,f3,f4,f5,f6", "fields2": "f51,f52,f53,f54,f55,f56,f57",
+                        })
+                        body = self.client.get("https://push2his.eastmoney.com/api/qt/stock/kline/get?" + params)
+                        return code, parse_market_days(body, code)
+                    with ThreadPoolExecutor(max_workers=2) as executor:
+                        self._market_comparison_histories = dict(executor.map(history, ("sh000001", "sz399106")))
+                except (FetchError, MarketDataError) as error:
+                    self._market_comparison_error = str(error)
+            if self._market_comparison_error:
+                raise MarketDataError(self._market_comparison_error)
+            if daily:
+                return compare_market_days(market, self._market_comparison_histories)
+            return compare_market_minutes(market, self._market_comparison_histories, cutoff)
+        except (FetchError, MarketDataError) as error:
+            self._market_comparison_error = str(error)
+            return replace(market, comparison_error=str(error))
+
+    def _market_snapshot(self) -> MarketTurnover:
+        params = urlencode({
+            "secids": "1.000001,0.399106", "fields": "f12,f13,f14,f6,f124",
+            "fltt": "2", "invt": "2",
+        })
+        try:
+            return parse_market_eastmoney(self.client.get(
+                "https://push2.eastmoney.com/api/qt/ulist.np/get?" + params,
+                referer="https://quote.eastmoney.com/",
+            ))
+        except (FetchError, MarketDataError) as first_error:
+            try:
+                return parse_market_sina(self.client.get(
+                    "https://hq.sinajs.cn/list=sh000001,sz399106", encoding="gb18030",
+                    referer="https://finance.sina.com.cn/",
+                ))
+            except (FetchError, MarketDataError) as second_error:
+                raise FetchError(f"两市成交额获取失败：{first_error}；备用源：{second_error}") from None
 
     def daily(self, code: str) -> list[DailyBar]:
         if not re.fullmatch(r"(?:sh|sz|bj)\d{6}", code):

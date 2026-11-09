@@ -33,6 +33,9 @@ class FakeProviders:
     def daily(self, code):
         return []
 
+    def market_turnover(self):
+        raise FetchError("测试中未提供市场成交额")
+
 
 class EngineTests(unittest.TestCase):
     def setUp(self):

@@ -52,6 +52,7 @@ def calculate_daily(bars: list[DailyBar], *, now: datetime | None = None) -> Dai
     ema12 = ema26 = bars[0].close
     dea = D(0)
     kdj_gaps, macd_values = [], []
+    last_cross_index = None
     for index, bar in enumerate(bars):
         window = bars[max(0, index - 8):index + 1]
         high, low = max(item.high for item in window), min(item.low for item in window)
@@ -64,6 +65,11 @@ def calculate_daily(bars: list[DailyBar], *, now: datetime | None = None) -> Dai
         dea += (dif - dea) * 2 / 10
         kdj_gaps.append(k - d)
         macd_values.append(2 * (dif - dea))
+        # Record crosses only after both nine-bar lookback windows are available.
+        if index >= 9:
+            previous_gap, current_gap = kdj_gaps[-2:]
+            if (previous_gap <= 0 < current_gap) or (previous_gap >= 0 > current_gap):
+                last_cross_index = index
 
     # Stages use actual daily history, never consecutive ten-second polls.
     signal = phase_signal(
@@ -82,4 +88,6 @@ def calculate_daily(bars: list[DailyBar], *, now: datetime | None = None) -> Dai
     return DailyIndicators(
         bars[-1].day, k, d, 3 * k - 2 * d, dif, dea, macd_values[-1], signal,
         provisional, macd_signal, tuple(macd_values[-20:]),
+        kdj_cross_day=bars[last_cross_index].day if last_cross_index is not None else "",
+        kdj_phase_days=len(bars) - last_cross_index if last_cross_index is not None else None,
     )

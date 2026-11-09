@@ -187,6 +187,9 @@ class IndicatorEngineTests(unittest.TestCase):
                 if self.fail_daily:
                     raise FetchError("日线失败")
                 return daily_bars()
+
+            def market_turnover(self):
+                raise FetchError("测试中未提供市场成交额")
         self.providers = FakeProviders()
         self.monitor = Monitor(parse_config({'stocks': ['sh588710']}), self.providers, clock=lambda: self.now)
 
@@ -243,7 +246,7 @@ class IndicatorRenderTests(unittest.TestCase):
         table = next(part for part in render_view([row], 10, columns=180).renderables if isinstance(part, Table))
         headers = [column.header.plain for column in table.columns]
         index = headers.index('收益')
-        self.assertEqual(headers[index + 1:index + 5], ['KDJ(日)', 'MACD(日)', '性价比', '指标日期'])
+        self.assertEqual(headers[index + 1:index + 5], ['KDJ(日)', 'MACD(日)', '技术分', '指标日期'])
         for columns in (80, 100, 180):
             self.assertTrue(any(isinstance(part, Table) for part in render_view([row], 10, columns=columns).renderables))
             output = render([row], 10, columns=columns)
@@ -257,8 +260,9 @@ class IndicatorRenderTests(unittest.TestCase):
         row = self.row()
         row = replace(row, indicators=replace(row.indicators, provisional=True), indicators_stale=True, indicator_error='日线失败')
         output = render([row], 10, columns=180)
-        self.assertIn('金叉(预/旧)', output)
-        self.assertIn('红柱(预/旧)', output)
+        self.assertIn('盘中预估', output)
+        self.assertIn('金叉(旧)', output)
+        self.assertIn('红柱(旧)', output)
         self.assertIn('日线失败', output)
         self.assertIn(row.indicators.as_of, output)
 
@@ -267,10 +271,11 @@ class IndicatorRenderTests(unittest.TestCase):
         row = replace(row, indicators=replace(row.indicators, kdj_signal='即将金叉', macd_signal='即将红柱', macd=D('-0.001'), provisional=True), indicators_stale=True)
         cells = indicator_cells(row)
         self.assertEqual(cells['kdj'].plain, '即将金叉(预/旧)')
-        self.assertEqual(cells['macd'].plain, '即将红柱(预/旧)')
+        self.assertEqual(cells['macd'].plain, '绿柱·即将红柱(预/旧)')
         self.assertEqual(cells['kdj'].style, 'yellow')
         self.assertEqual(cells['macd'].style, 'yellow')
         for columns in (80, 100, 180):
             output = render([row], 10, columns=columns)
-            self.assertIn('即将金叉(预/旧)', output)
-            self.assertIn('即将红柱(预/旧)', output)
+            self.assertIn('盘中预估', output)
+            self.assertIn('即将金叉(旧)', output)
+            self.assertIn('即将红柱(旧)', output)

@@ -78,3 +78,24 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("0.725", text)
         self.assertNotIn("正在更新行情", text)
         self.assertNotIn("object at", text)
+
+    def test_d_toggles_details_during_wait_without_a_network_refresh(self):
+        console, output = self.console(terminal=True)
+        keys = iter(['d', None, 'D', None, None, None])
+        ticks = []
+        clock_value = [0.0]
+        def sleep(seconds):
+            clock_value[0] += seconds
+        with Dashboard('live', console=console, key_reader=lambda: next(keys, None)) as display:
+            display.wait(1, on_poll=lambda changed: ticks.append((changed, display.score_details)), clock=lambda: clock_value[0], sleep=sleep)
+        self.assertIn((True, True), ticks)
+        self.assertIn((True, False), ticks)
+        self.assertFalse(display.score_details)
+
+    def test_log_wait_sleeps_without_polling_or_reprinting_snapshots(self):
+        console, output = self.console()
+        sleeps = []
+        with Dashboard('log', console=console) as display:
+            display.wait(10, on_poll=lambda changed: self.fail('log mode should not poll'), sleep=sleeps.append)
+        self.assertEqual(sleeps, [10])
+        self.assertEqual(output.getvalue(), '')

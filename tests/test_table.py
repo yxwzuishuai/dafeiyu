@@ -35,7 +35,7 @@ class CombinedTableTests(unittest.TestCase):
             with self.subTest(columns=columns):
                 output = render([etf_row()], 10, now=NOW, columns=columns)
                 self.assertTrue(all(width(line) <= columns for line in output.splitlines()))
-                for value in ("半导", "0.758", "0.695", "-0.008", "30,300", "+272.70"):
+                for value in ("半导", "0.758", "0.695", "30,300", "+272.70"):
                     self.assertIn(value, output)
 
     def test_source_time_remains_distinct_from_refresh_time(self):

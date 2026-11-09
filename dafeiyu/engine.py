@@ -3,7 +3,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from .config import Config
 from .indicators import calculate_daily, supports_daily
-from .models import DailyIndicators, Key, Quote, Row
+from .models import DailyIndicators, Key, MarketTurnover, Quote, Row
 from .providers import Providers
 
 
@@ -18,30 +18,37 @@ class Monitor:
         self.indicators: dict[Key, DailyIndicators] = {}
         self.indicator_errors: dict[Key, str] = {}
         self.last_indicator_attempt: dict[Key, float] = {}
+        self.market_turnover: MarketTurnover | None = None
+        self.market_error = ""
 
     def refresh(self) -> list[Row]:
         groups = {kind: [a.code for a in self.config.assets if a.kind == kind] for kind in ("stock", "fund", "coin")}
-        jobs = []
+        # A shared market snapshot is fetched once per cycle, not once per asset.
+        jobs = [(self.providers.market_turnover, (), [], "market")]
         if groups["stock"]:
-            jobs.append((self.providers.stocks, groups["stock"], [("stock", code) for code in groups["stock"]], False))
+            jobs.append((self.providers.stocks, (groups["stock"],), [("stock", code) for code in groups["stock"]], "quote"))
         now = self.clock()
         if groups["fund"] and (self.last_fund_attempt is None or now - self.last_fund_attempt >= self.config.fund_interval_seconds):
             self.last_fund_attempt = now
-            jobs.append((self.providers.funds, groups["fund"], [("fund", code) for code in groups["fund"]], False))
+            jobs.append((self.providers.funds, (groups["fund"],), [("fund", code) for code in groups["fund"]], "quote"))
         for code in groups["coin"]:
-            jobs.append((self.providers.coin, code, [("coin", code)], False))
+            jobs.append((self.providers.coin, (code,), [("coin", code)], "quote"))
         for asset in self.config.assets:
             attempted = self.last_indicator_attempt.get(asset.key)
             if supports_daily(asset) and (attempted is None or now - attempted >= 60):
                 self.last_indicator_attempt[asset.key] = now
-                jobs.append((self.providers.daily, asset.code, [asset.key], True))
+                jobs.append((self.providers.daily, (asset.code,), [asset.key], "daily"))
         with ThreadPoolExecutor(max_workers=4) as executor:
-            futures = {executor.submit(function, argument): (keys, daily) for function, argument, keys, daily in jobs}
+            futures = {executor.submit(function, *arguments): (keys, kind) for function, arguments, keys, kind in jobs}
             for future in as_completed(futures):
-                keys, daily = futures[future]
+                keys, kind = futures[future]
                 try:
                     batch = future.result()
-                    if daily:
+                    if kind == "market":
+                        self.market_turnover = batch
+                        self.market_error = ""
+                        continue
+                    if kind == "daily":
                         self.indicators[keys[0]] = calculate_daily(batch)
                         self.indicator_errors.pop(keys[0], None)
                         continue
@@ -53,8 +60,11 @@ class Monitor:
                             self.errors[key] = batch.errors.get(key, "行情源未返回数据")
                 except Exception as error:
                     # One bad response must not stop the other markets or future cycles.
+                    if kind == "market":
+                        self.market_error = str(error) or type(error).__name__
+                        continue
                     for key in keys:
-                        errors = self.indicator_errors if daily else self.errors
+                        errors = self.indicator_errors if kind == "daily" else self.errors
                         errors[key] = str(error) or type(error).__name__
         return [
             Row(

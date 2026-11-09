@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from datetime import datetime
 from decimal import Decimal, InvalidOperation
 
 
@@ -88,10 +89,32 @@ class DailyIndicators:
     provisional: bool = False
     macd_signal: str = ""
     macd_history: tuple[Decimal, ...] = ()
+    kdj_cross_day: str = ""
+    kdj_phase_days: int | None = None
 
     @property
     def macd_color(self) -> str:
         return "红柱" if self.macd > 0 else "绿柱" if self.macd < 0 else "零轴"
+
+
+@dataclass(frozen=True)
+class MarketTurnover:
+    shanghai_amount: Decimal
+    shenzhen_amount: Decimal
+    market_time: datetime
+    source: str
+    previous_amount: Decimal | None = None
+    previous_day: str = ""
+    comparison_kind: str = ""
+    comparison_error: str = ""
+
+    @property
+    def total_amount(self) -> Decimal:
+        return self.shanghai_amount + self.shenzhen_amount
+
+    @property
+    def change_amount(self) -> Decimal | None:
+        return self.total_amount - self.previous_amount if self.previous_amount is not None else None
 
 
 @dataclass(frozen=True)
